@@ -51,6 +51,7 @@ from homeassistant.const import (
     CONF_FOR,
     CONF_ID,
     CONF_MATCH,
+    CONF_PARALLEL,
     CONF_PLATFORM,
     CONF_REPEAT,
     CONF_SCAN_INTERVAL,
@@ -1441,6 +1442,21 @@ _SCRIPT_ERROR_SCHEMA = vol.Schema(
     }
 )
 
+_SCRIPT_PARALLEL_SCHEMA = vol.Schema(
+    {
+        **SCRIPT_ACTION_BASE_SCHEMA,
+        vol.Required(CONF_PARALLEL): SCRIPT_SCHEMA,
+    }
+)
+
+_SCRIPT_SEQUENCE_SCHEMA = vol.Schema(
+    {
+        **SCRIPT_ACTION_BASE_SCHEMA,
+        vol.Required(CONF_SEQUENCE): SCRIPT_SCHEMA,
+    }
+)
+
+
 SCRIPT_ACTION_DELAY = "delay"
 SCRIPT_ACTION_WAIT_TEMPLATE = "wait_template"
 SCRIPT_ACTION_CHECK_CONDITION = "condition"
@@ -1454,6 +1470,8 @@ SCRIPT_ACTION_WAIT_FOR_TRIGGER = "wait_for_trigger"
 SCRIPT_ACTION_VARIABLES = "variables"
 SCRIPT_ACTION_STOP = "stop"
 SCRIPT_ACTION_ERROR = "error"
+SCRIPT_ACTION_PARALLEL = "parallel"
+SCRIPT_ACTION_SEQUENCE = "sequence"
 
 
 def determine_script_action(action: dict[str, Any]) -> str:
@@ -1497,6 +1515,12 @@ def determine_script_action(action: dict[str, Any]) -> str:
     if CONF_ERROR in action:
         return SCRIPT_ACTION_ERROR
 
+    if CONF_PARALLEL in action:
+        return SCRIPT_ACTION_PARALLEL
+
+    if CONF_SEQUENCE in action:
+        return SCRIPT_ACTION_SEQUENCE
+
     raise ValueError("Unable to determine action")
 
 
@@ -1514,6 +1538,8 @@ ACTION_TYPE_SCHEMAS: dict[str, Callable[[Any], dict]] = {
     SCRIPT_ACTION_VARIABLES: _SCRIPT_SET_SCHEMA,
     SCRIPT_ACTION_STOP: _SCRIPT_STOP_SCHEMA,
     SCRIPT_ACTION_ERROR: _SCRIPT_ERROR_SCHEMA,
+    SCRIPT_ACTION_PARALLEL: _SCRIPT_PARALLEL_SCHEMA,
+    SCRIPT_ACTION_SEQUENCE: _SCRIPT_SEQUENCE_SCHEMA,
 }
 
 

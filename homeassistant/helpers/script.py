@@ -38,6 +38,7 @@ from homeassistant.const import (
     CONF_EVENT_DATA,
     CONF_EVENT_DATA_TEMPLATE,
     CONF_MODE,
+    CONF_PARALLEL,
     CONF_REPEAT,
     CONF_SCENE,
     CONF_SEQUENCE,
@@ -294,6 +295,16 @@ async def async_validate_action_config(
             choose_conf[CONF_SEQUENCE] = await async_validate_actions_config(
                 hass, choose_conf[CONF_SEQUENCE]
             )
+
+    elif action_type == cv.SCRIPT_ACTION_PARALLEL:
+        config[CONF_PARALLEL] = await async_validate_actions_config(
+            hass, config[CONF_PARALLEL]
+        )
+
+    elif action_type == cv.SCRIPT_ACTION_SEQUENCE:
+        config[CONF_SEQUENCE] = await async_validate_actions_config(
+            hass, config[CONF_SEQUENCE]
+        )
 
     else:
         raise ValueError(f"No validation for {action_type}")
@@ -859,6 +870,36 @@ class _ScriptRun:
         trace_set_result(error=error)
         raise _AbortScript(error)
 
+    async def _async_parallel_step(self) -> None:
+        """Run a sequence in parallel."""
+        # pylint: disable=protected-access
+        scripts = await self._script._async_get_parallel_scripts(self._step)
+
+        async def async_run_with_trace(idx: int, script: Script) -> None:
+            """Run a script with a trace path."""
+            with trace_path(str(idx)):
+                await self._async_run_script(script)
+
+        with trace_path(["parallel"]):
+            results = await asyncio.gather(
+                *(
+                    async_run_with_trace(idx, script)
+                    for idx, script in enumerate(scripts)
+                ),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    raise result
+
+    async def _async_sequence_step(self) -> None:
+        """Run a sub-sequence."""
+        # pylint: disable=protected-access
+        script = await self._script._async_get_sequence_script(self._step)
+
+        with trace_path(["sequence"]):
+            await self._async_run_script(script)
+
     async def _async_run_script(self, script: Script) -> None:
         """Execute a script."""
         await self._async_run_long_action(
@@ -1031,6 +1072,8 @@ class Script:
         self._config_cache: dict[set[tuple], Callable[..., bool]] = {}
         self._repeat_script: dict[int, Script] = {}
         self._choose_data: dict[int, _ChooseData] = {}
+        self._parallel_scripts: dict[int, list[Script]] = {}
+        self._sequence_script: dict[int, Script] = {}
         self._referenced_entities: set[str] | None = None
         self._referenced_devices: set[str] | None = None
         self._referenced_areas: set[str] | None = None
@@ -1065,6 +1108,11 @@ class Script:
         self._set_logger(logger)
         for script in self._repeat_script.values():
             script.update_logger(self._logger)
+        for script in self._sequence_script.values():
+            script.update_logger(self._logger)
+        for parallel_scripts in self._parallel_scripts.values():
+            for parallel_script in parallel_scripts:
+                parallel_script.update_logger(self._logger)
         for choose_data in self._choose_data.values():
             for _, script in choose_data["choices"]:
                 script.update_logger(self._logger)
@@ -1125,6 +1173,13 @@ class Script:
                 if CONF_DEFAULT in step:
                     Script._find_referenced_areas(referenced, step[CONF_DEFAULT])
 
+            elif action == cv.SCRIPT_ACTION_PARALLEL:
+                for script in step[CONF_PARALLEL]:
+                    Script._find_referenced_areas(referenced, script)
+
+            elif action == cv.SCRIPT_ACTION_SEQUENCE:
+                Script._find_referenced_areas(referenced, step[CONF_SEQUENCE])
+
     @property
     def referenced_devices(self):
         """Return a set of referenced devices."""
@@ -1161,6 +1216,13 @@ class Script:
                     Script._find_referenced_devices(referenced, choice[CONF_SEQUENCE])
                 if CONF_DEFAULT in step:
                     Script._find_referenced_devices(referenced, step[CONF_DEFAULT])
+
+            elif action == cv.SCRIPT_ACTION_PARALLEL:
+                for script in step[CONF_PARALLEL]:
+                    Script._find_referenced_devices(referenced, script)
+
+            elif action == cv.SCRIPT_ACTION_SEQUENCE:
+                Script._find_referenced_devices(referenced, step[CONF_SEQUENCE])
 
     @property
     def referenced_entities(self):
@@ -1199,6 +1261,13 @@ class Script:
                     Script._find_referenced_entities(referenced, choice[CONF_SEQUENCE])
                 if CONF_DEFAULT in step:
                     Script._find_referenced_entities(referenced, step[CONF_DEFAULT])
+
+            elif action == cv.SCRIPT_ACTION_PARALLEL:
+                for script in step[CONF_PARALLEL]:
+                    Script._find_referenced_entities(referenced, script)
+
+            elif action == cv.SCRIPT_ACTION_SEQUENCE:
+                Script._find_referenced_entities(referenced, step[CONF_SEQUENCE])
 
     def run(
         self, variables: _VarsType | None = None, context: Context | None = None
@@ -1410,6 +1479,58 @@ class Script:
             choose_data = await self._async_prep_choose_data(step)
             self._choose_data[step] = choose_data
         return choose_data
+
+    async def _async_prep_parallel_scripts(self, step: int) -> list[Script]:
+        action = self.sequence[step]
+        step_name = action.get(CONF_ALIAS, f"Parallel action at step {step+1}")
+        parallel_scripts: list[Script] = []
+        for idx, parallel_action in enumerate(action[CONF_PARALLEL], start=1):
+            parallel_name = parallel_action.get(CONF_ALIAS, f"action {idx}")
+            parallel_script = Script(
+                self._hass,
+                [parallel_action],
+                f"{self.name}: {step_name}: {parallel_name}",
+                self.domain,
+                running_description=self.running_description,
+                script_mode=SCRIPT_MODE_PARALLEL,
+                max_runs=self.max_runs,
+                logger=self._logger,
+                top_level=False,
+            )
+            parallel_script.change_listener = partial(
+                self._chain_change_listener, parallel_script
+            )
+            parallel_scripts.append(parallel_script)
+        return parallel_scripts
+
+    async def _async_get_parallel_scripts(self, step: int) -> list[Script]:
+        if not (parallel_scripts := self._parallel_scripts.get(step)):
+            parallel_scripts = await self._async_prep_parallel_scripts(step)
+            self._parallel_scripts[step] = parallel_scripts
+        return parallel_scripts
+
+    async def _async_prep_sequence_script(self, step: int) -> Script:
+        action = self.sequence[step]
+        step_name = action.get(CONF_ALIAS, f"Sequence at step {step+1}")
+        sequence = Script(
+            self._hass,
+            action[CONF_SEQUENCE],
+            f"{self.name}: {step_name}",
+            self.domain,
+            running_description=self.running_description,
+            script_mode=SCRIPT_MODE_PARALLEL,
+            max_runs=self.max_runs,
+            logger=self._logger,
+            top_level=False,
+        )
+        sequence.change_listener = partial(self._chain_change_listener, sequence)
+        return sequence
+
+    async def _async_get_sequence_script(self, step: int) -> Script:
+        if not (sequence_script := self._sequence_script.get(step)):
+            sequence_script = await self._async_prep_sequence_script(step)
+            self._sequence_script[step] = sequence_script
+        return sequence_script
 
     def _log(
         self, msg: str, *args: Any, level: int = logging.INFO, **kwargs: Any
