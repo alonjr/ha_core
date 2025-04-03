@@ -1,0 +1,34 @@
+0
+    card:
+      type: custom:button-card
+      entity: sensor.weather_station_rain_rate_piezo
+      styles:
+        icon:
+          - animation: blink 2s ease infinite
+        card:
+          - height: 70px
+          - width: 90px
+        name:
+          - font-size: 14px
+      state:
+        - value: 0.3
+          operator: <
+          color: grey
+          name: Drizzle
+        - value: 2.5
+          operator: <
+          color: white
+          name: Light
+        - value: 7.6
+          operator: <
+          color: orange
+          name: Moderate
+        - value: 20
+          operator: <
+          color: purple
+          name: Heavy
+        - value: 100
+          operator: <
+          color: red
+          name: Violent
+  - type: custom:button-c
