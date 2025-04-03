@@ -1,6 +1,4 @@
-0
-    card:
-      type: custom:button-card
+
       entity: sensor.weather_station_rain_rate_piezo
       styles:
         icon:
@@ -31,4 +29,3 @@
           operator: <
           color: red
           name: Violent
-  - type: custom:button-c
